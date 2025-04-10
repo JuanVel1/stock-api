@@ -33,9 +33,6 @@ type APIResponse struct {
 	NextPage string  `json:"next_page"`
 }
 
-//var apiKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdHRlbXB0cyI6MjksImVtYWlsIjoianVhbmRldi5lbmdAb3V0bG9vay5jb20iLCJleHAiOjE3NDM4MTAwMDQsImlkIjoiMCIsInBhc3N3b3JkIjoiJyBPUiAnMSc9JzEifQ.M5vY7icJ_UjD5fef4WdJXpIEr6LBLbkmTCg2KUV-aJw"
-//var dbConnStr = "postgresql://root@localhost:26257/defaultdb?sslmode=disable"
-
 var db *sqlx.DB
 
 func initDB() error {
