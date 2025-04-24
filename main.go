@@ -6,8 +6,14 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	//AWS
+	// "github.com/aws/aws-sdk-go/aws"
+	// "github.com/aws/aws-sdk-go/aws/session"
+	// "github.com/aws/aws-sdk-go/service/s3"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -22,7 +28,26 @@ func main() {
 
 	godotenv.Load(".env")
 
-	// 1. Conectar a CockroachDB
+	// Configuración para LocalStack
+	// sess := session.Must(session.NewSession(&aws.Config{
+	// 	Endpoint:   aws.String("http://localhost:4566"), // LocalStack endpoint
+	// 	Region:     aws.String("us-west-2"),
+	// 	DisableSSL: aws.Bool(true),
+	// }))
+
+	// s3Client := s3.New(sess)
+	// // 3. Ejemplo: Listar buckets (para verificar conexión)
+	// result, err := s3Client.ListBuckets(nil)
+	// if err != nil {
+	// 	fmt.Println("Error al listar buckets:", err)
+	// 	return
+	// }
+
+	// fmt.Println("Buckets en LocalStack:")
+	// for _, bucket := range result.Buckets {
+	// 	fmt.Println(*bucket.Name)
+	// }
+
 	db = sqlx.MustConnect("postgres", os.Getenv("DB_URL"))
 	port := os.Getenv("PORT")
 
@@ -53,22 +78,62 @@ func main() {
 		log.Fatalf("Error configurando proxies: %v", err)
 	}
 
-	// 3. Endpoints
 	r.GET("/api/stocks", func(c *gin.Context) {
+		// Obtener parámetros de paginación
+		next := c.DefaultQuery("next", "0")
+		limit := c.DefaultQuery("limit", "50") // Cambiado a 50 por defecto
+
+		// Convertir strings a integers con validación
+		nextNum := 0
+		limitNum := 50 // Valor por defecto cambiado a 50
+
+		if n, err := strconv.Atoi(next); err == nil && n >= 0 {
+			nextNum = n
+		}
+
+		if l, err := strconv.Atoi(limit); err == nil && l > 0 && l <= 100 {
+			limitNum = l // Limitar a máximo 100 registros
+		}
+
 		var stocks []Stock
-		err := db.Select(&stocks, "SELECT * FROM stocks LIMIT 100")
+		var total int
+
+		// Obtener el total de registros
+		err := db.Get(&total, "SELECT COUNT(*) FROM stocks")
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(200, stocks)
+
+		// Consulta paginada
+		query := `SELECT * FROM stocks ORDER BY time DESC OFFSET $1 LIMIT $2`
+		err = db.Select(&stocks, query, nextNum, limitNum)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Calcular siguiente offset y si hay más registros
+		hasMore := (nextNum + limitNum) < total
+		nextOffset := nextNum + limitNum
+
+		c.JSON(200, gin.H{
+			"data": stocks,
+			"pagination": gin.H{
+				"current_offset": nextNum,
+				"per_page":       limitNum,
+				"total":          total,
+				"has_more":       hasMore,
+				"next_offset":    nextOffset,
+			},
+		})
+		fmt.Println("Totales ", len(stocks))
 	})
 
 	r.GET("/api/recommendations", getStockRecommendations)
 
 	// 4. Iniciar servidor
-
-	r.Run(":" + port) // Cambia el puerto según sea necesario
+	r.Run(":" + port)
 }
 
 type Stock struct {
@@ -91,7 +156,7 @@ type StockRecommendation struct {
 	PercentChange float64 `json:"percent_change"`
 }
 
-// Brokerage reputation scores
+// Brokerage puntajes
 var brokerageReputation = map[string]float64{
 	"The Goldman Sachs Group": 1.2,
 	"Morgan Stanley":          1.1,
@@ -116,7 +181,6 @@ var ratingValues = map[string]float64{
 }
 
 func getStockRecommendations(c *gin.Context) {
-	// Consultar todos los stocks de la base de datos
 	var stocks []Stock
 	query := `SELECT 
 		ticker, company, brokerage, action, rating_from, rating_to, 
@@ -183,26 +247,26 @@ func processRecommendations(stocks []Stock) []StockRecommendation {
 }
 
 func calculateStockScore(stock Stock, lastUpdated time.Time) float64 {
-	// 1. Puntaje por cambio de rating (más peso)
+	// Puntaje por cambio de rating (más peso)
 	ratingScore := (ratingValues[stock.RatingTo] - ratingValues[stock.RatingFrom]) * 20
 
-	// 2. Puntaje por cambio en precio objetivo (porcentaje)
+	// Puntaje por cambio en precio objetivo (porcentaje)
 	var targetChangeScore float64
 	if stock.TargetFrom > 0 {
 		percentChange := ((stock.TargetTo - stock.TargetFrom) / stock.TargetFrom) * 100
 		targetChangeScore = percentChange * 0.5
 	}
 
-	// 3. Puntaje por reputación del bróker (más diferenciación)
+	// Puntaje por reputación del bróker (más diferenciación)
 	brokerScore := brokerageReputation[stock.Brokerage] * 8
 
-	// 4. Puntaje por actividad reciente (últimos 7 días)
+	// Puntaje por actividad reciente (últimos 7 días)
 	recencyScore := 0.0
 	if time.Since(lastUpdated).Hours() <= 168 {
 		recencyScore = 10 - (time.Since(lastUpdated).Hours() / 16.8)
 	}
 
-	// 5. Puntaje por tipo de acción
+	// Puntaje por tipo de acción
 	actionScore := 0.0
 	switch {
 	case strings.Contains(stock.Action, "upgraded"):
